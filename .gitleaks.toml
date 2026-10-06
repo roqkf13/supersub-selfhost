@@ -1,0 +1,16 @@
+# gitleaks 설정 — 기본 규칙에 Cloudflare 터널 모양 둘을 더한다.
+# 가짜 값으로 시험해 보니 기본 규칙은 대시보드 설치 명령의 터널 토큰(eyJhIjoi…)을 놓쳤다(2026-09-30).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "cloudflare-tunnel-token"
+description = "Cloudflare 터널 토큰 - 계정, 터널, 비밀을 base64 로 싼 값(대시보드 설치 명령에 들어 있다)"
+regex = '''eyJhIjoi[A-Za-z0-9+/_-]{60,}={0,2}'''
+keywords = ["eyjhijoi"]
+
+[[rules]]
+id = "cloudflare-tunnel-secret"
+description = "Cloudflare 터널 자격증명 파일(creds.json)의 TunnelSecret"
+regex = '''"TunnelSecret"\s*:\s*"[A-Za-z0-9+/=]{32,}"'''
+keywords = ["tunnelsecret"]

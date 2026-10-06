@@ -1,0 +1,21 @@
+# 🔴 비밀이 들어가는 자리 — 절대 커밋하지 않는다
+.env
+.env.local
+cloudflared/*.json
+cloudflared/config.yml
+
+# 런타임 산출물
+*.log
+
+# 워커 비밀 — WORKER_TOKEN·MinIO 자격
+worker/worker.env
+
+__pycache__/
+
+# upstream/(팀 코드 사본)에서 돌리면 생기는 것. 사본 자체는 `git add -f` 로 넣었다 —
+# 팀의 하위 .gitignore 에 걸리는 파일이 조용히 빠지지 않게(upstream/README.md)
+.venv/
+node_modules/
+.next/
+# 팀도 무시하는 파일이라 사본 밖(`worker/agent.uv.lock`)에 정본을 두고 복사해 쓴다
+upstream/agent/uv.lock

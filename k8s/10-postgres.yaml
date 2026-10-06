@@ -1,0 +1,92 @@
+# PostgreSQL 18 + pgvector.
+#
+# 🔴 pgvector 가 들어 있는 이미지를 쓴다. 맨 postgres 이미지에는 확장이 없고,
+#    확장이 없으면 `vector` 타입을 쓰는 마이그레이션이 **initContainer 안에서
+#    멈춰 파드가 안 뜬다**(팀 `fastapi/docs/deployment.md` 1절).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: supersub
+data:
+  # `/docker-entrypoint-initdb.d` 는 **데이터 디렉터리가 빈 첫 기동에만** 돈다.
+  # 이미 만들어진 PVC 에 붙이면 안 돈다 — 그때는 손으로 한 번 만든다:
+  #   kubectl -n supersub exec deploy/postgres -- psql -U supersub -d supersub \
+  #     -c 'CREATE EXTENSION IF NOT EXISTS vector'
+  01-extensions.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: supersub
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: supersub
+spec:
+  replicas: 1
+  strategy:
+    # 🔴 RWO 볼륨이라 새 파드와 옛 파드가 같이 뜨면 안 된다.
+    type: Recreate
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg18
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: supersub
+            - name: POSTGRES_USER
+              value: supersub
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: supersub-db, key: POSTGRES_PASSWORD }
+            # 데이터가 PVC 루트가 아니라 하위 디렉터리에 오게 한다 —
+            # local-path 가 만드는 디렉터리에 lost+found 등이 있으면 initdb 가 거부한다.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "supersub", "-d", "supersub"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "supersub", "-d", "supersub"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: postgres-data }
+        - name: init
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: supersub
+spec:
+  selector: { app: postgres }
+  ports:
+    - port: 5432
+      targetPort: 5432

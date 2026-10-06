@@ -1,0 +1,8 @@
+# 커밋 전 비밀 검사 — 스테이징된 변경에서 키 · 토큰 · 비밀 모양을 찾아 커밋을 막는다.
+# 규칙은 .gitleaks.toml(기본 규칙 + Cloudflare 터널 모양).
+# PC 마다 한 번 `pre-commit install` 해야 켜진다. 첫 커밋 때 pre-commit 이 Go 를 받아 빌드한다(30초쯤).
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

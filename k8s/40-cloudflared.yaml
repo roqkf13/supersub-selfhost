@@ -1,0 +1,85 @@
+# Cloudflare 터널 — 공인 IP 없이 서브도메인으로 노출한다.
+#
+# 🔴 다른 서비스가 쓰는 터널에 얹지 않고 **독립 터널**을 쓴다. 거기 얹으면 이쪽을
+#    내릴 때 그쪽 서비스까지 같이 내려간다.
+#    터널은 계정당 여러 개 돌려도 된다.
+#
+# 준비(한 번):
+#   cloudflared tunnel login
+#   cloudflared tunnel create supersub
+#   cloudflared tunnel route dns supersub supersub-api.example.com
+#   cloudflared tunnel route dns supersub supersub-storage.example.com
+#   kubectl -n supersub create secret generic supersub-tunnel \
+#     --from-file=credentials.json=$HOME/.cloudflared/<터널 UUID>.json
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: supersub
+data:
+  config.yml: |
+    tunnel: supersub
+    credentials-file: /etc/cloudflared/creds/credentials.json
+    no-autoupdate: true
+
+    ingress:
+      # 🔴 **웹 화면** — 포트폴리오에서 링크할 곳. 사람이 들어오는 주소다.
+      - hostname: supersub.example.com
+        service: http://web:3000
+
+      # API — 🔴 8080 이다(8000 아님)
+      - hostname: supersub-api.example.com
+        service: http://backend:8080
+
+      # 저장소 — 브라우저가 사전 서명 URL 로 **직접** PUT 하므로 밖에서 닿아야 한다.
+      # 이 호스트가 곧 `AWS_ENDPOINT_URL_S3` 값이다.
+      #
+      # 🔴 **https 다.** 백엔드가 Cloudflare 를 안 지나고 직결하려고 MinIO 에
+      #    인증서를 달았고(`make-minio-cert.sh`), 그때부터 9000 이 TLS 다.
+      #    `http://` 로 두면 밖에서 끊긴다.
+      # 🔴 `noTLSVerify` — 자체 서명이라 cloudflared 가 검증하면 못 붙는다.
+      #    밖에서 보는 인증서는 Cloudflare 가 주는 진짜 것이라 영향 없다.
+      - hostname: supersub-storage.example.com
+        service: https://minio:9000
+        originRequest:
+          noTLSVerify: true
+
+      - service: http_status:404
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: supersub
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: cloudflared }
+  template:
+    metadata:
+      labels: { app: cloudflared }
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:latest
+          # 🔴 `--metrics` 를 안 주면 cloudflared 가 메트릭을 **localhost 임의
+          #    포트**에 붙여서 아래 `/ready` 프로브가 영원히 실패하고 파드가
+          #    무한 재시작한다. 터널 자체는 멀쩡한데 죽는 것처럼 보인다.
+          args:
+            - tunnel
+            - --config=/etc/cloudflared/config.yml
+            - --metrics=0.0.0.0:2000
+            - run
+          volumeMounts:
+            - { name: config, mountPath: /etc/cloudflared/config.yml, subPath: config.yml }
+            - { name: creds, mountPath: /etc/cloudflared/creds, readOnly: true }
+          livenessProbe:
+            httpGet: { path: /ready, port: 2000 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap: { name: cloudflared-config }
+        - name: creds
+          secret: { secretName: supersub-tunnel }

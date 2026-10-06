@@ -1,0 +1,91 @@
+# super-sub 백엔드.
+#
+# 🔴 이미지는 **로컬에서 빌드해 k3s 의 containerd 에 넣은 것**이라 레지스트리가
+#    없다. 그래서 `imagePullPolicy: Never` 다 — 안 넣으면 k8s 가 Docker Hub 에서
+#    `supersub-backend:local` 을 찾다가 ImagePullBackOff 로 멈춘다.
+#
+#    빌드(이 기계 관례 — 이웃 저장소 `k8s/scripts/k3s-build-images.sh` 와 같다):
+#      sudo nerdctl --address /run/k3s/containerd/containerd.sock --namespace k8s.io \
+#        build -t supersub-backend:local upstream/fastapi
+#    (`scripts/bootstrap.sh` 4단계가 이렇게 한다 — 저장소 루트에서)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: supersub
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: backend }
+  template:
+    metadata:
+      labels: { app: backend }
+    spec:
+      # 🔴 **`supersub-storage.example.com` 을 파드 안에서 MinIO 로 돌린다.**
+      #    이 값이 없으면 백엔드의 S3 호출이 Cloudflare 를 한 바퀴 돌고,
+      #    거기서 **HEAD 의 첫 요청이 403** 이 된다(README 참고).
+      #    IP 는 `make-secrets.sh` 가 아니라 `wire-direct.sh` 가 채운다 —
+      #    ClusterIP 는 서비스를 다시 만들면 바뀐다.
+      hostAliases:
+        - ip: "MINIO_CLUSTER_IP"
+          hostnames: ["supersub-storage.example.com"]
+      # 🔴 마이그레이션을 앱보다 **먼저, 같은 파드에서** 돌린다. 팀 운영 k3s 와
+      #    같은 방식이다(커밋 5f85c9d). head 면 no-op 라 매 배포마다 돌아도 된다.
+      initContainers:
+        - name: migrate
+          image: supersub-backend:local
+          imagePullPolicy: Never
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - secretRef: { name: supersub-app }
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: supersub-db, key: DATABASE_URL }
+            # botocore 가 읽는다 — MinIO 의 자체 서명 인증서를 믿게 한다.
+            - name: AWS_CA_BUNDLE
+              value: /etc/minio-ca/ca.crt
+          volumeMounts:
+            - { name: minio-ca, mountPath: /etc/minio-ca, readOnly: true }
+      containers:
+        - name: backend
+          image: supersub-backend:local
+          imagePullPolicy: Never
+          # 🔴 컨테이너는 **8080** 을 듣는다(팀 Dockerfile 의 EXPOSE·CMD).
+          #    8000 이 아니다 — 이웃 저장소 backend 가 8000 이라 헷갈린다.
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef: { name: supersub-app }
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: supersub-db, key: DATABASE_URL }
+            # botocore 가 읽는다 — MinIO 의 자체 서명 인증서를 믿게 한다.
+            - name: AWS_CA_BUNDLE
+              value: /etc/minio-ca/ca.crt
+          volumeMounts:
+            - { name: minio-ca, mountPath: /etc/minio-ca, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: minio-ca
+          secret: { secretName: minio-ca }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: supersub
+spec:
+  selector: { app: backend }
+  ports:
+    - port: 8080
+      targetPort: 8080

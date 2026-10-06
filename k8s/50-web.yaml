@@ -1,0 +1,59 @@
+# 웹 화면(Next.js) — 포트폴리오에서 링크할 곳.
+#
+# 🔴 **운영(Vercel)은 안 건드린다.** 거기 `BACKEND_BASE_URL` 을 바꾸면 실제
+#    서비스가 이 백엔드를 보게 된다. 원하는 것은 "개인화한 사본을 링크로
+#    보여주는 것"이므로 **여기에 한 벌 더** 띄운다.
+#
+# 이미지는 `web/build.sh` 가 만든다(팀 저장소 `www/` 를 안 고치고 빌드).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: supersub
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      containers:
+        - name: web
+          image: supersub-web:local
+          imagePullPolicy: Never   # 레지스트리 없이 k3s containerd 에 넣은 이미지
+          ports:
+            - containerPort: 3000
+          env:
+            # 🔴 **클러스터 안 주소**를 준다. 이 값은 Next 서버가 쓰는 것이고
+            #    (브라우저가 아니라 `route handler` 가 부른다), 공개 주소를
+            #    넣으면 Cloudflare 를 한 바퀴 돌아 느려진다.
+            - name: BACKEND_BASE_URL
+              value: http://backend:8080/api/v1
+            # 없으면 챗봇만 503(`CHAT_NOT_CONFIGURED`). 나머지는 다 돈다.
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: supersub-app
+                  key: GEMINI_API_KEY
+                  optional: true
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 40
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: supersub
+spec:
+  selector: { app: web }
+  ports:
+    - port: 3000
+      targetPort: 3000
